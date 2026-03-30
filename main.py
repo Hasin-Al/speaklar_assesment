@@ -32,6 +32,26 @@ KB_PATH = os.path.join(os.path.dirname(__file__), "Knowledge_Bank.txt")
 DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
 TOP_K = 5
 CONTEXT_WINDOW = 5  # last N turns kept for context
+FORBIDDEN_PHRASES = {
+    "discount": [
+        "discount",
+        "special price",
+        "ডিসকাউন্ট",
+        "ছাড়",
+        "ছাড়",
+        "বিশেষ মূল্য",
+        "বিশেষ মূল্য ছাড়",
+        "বিশেষ মূল্য ছাড়",
+    ],
+    "gift_wrap": [
+        "gift wrap",
+        "gift wrapping",
+        "গিফট র্যাপ",
+        "গিফট র্যাপিং",
+        "উপহার মোড়ক",
+        "উপহার মোড়ক",
+    ],
+}
 
 # Use PBKDF2-SHA256 to avoid bcrypt's 72-byte limit.
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
@@ -179,6 +199,42 @@ class ContextManager:
             context_str = ' '.join(last_user_msgs)
             return f"{context_str} {message}"
         return message
+
+
+# ─────────────────────────── Answer Guard ───────────────────────────
+def _contains_any(text: str, phrases: List[str]) -> bool:
+    t = text.lower()
+    return any(p.lower() in t for p in phrases)
+
+
+def guard_answer(answer: str, kb_context: str) -> str:
+    """
+    Remove any sentences that contain forbidden phrases unless those phrases
+    appear in the retrieved KB chunk.
+    """
+    violations = []
+    for phrases in FORBIDDEN_PHRASES.values():
+        for phrase in phrases:
+            if _contains_any(answer, [phrase]) and not _contains_any(kb_context, [phrase]):
+                violations.append(phrase)
+
+    if not violations:
+        return answer
+
+    # Split into sentences and drop those containing forbidden phrases
+    sentences = re.split(r'(?<=[।!?])\s+', answer.strip())
+    kept = []
+    for s in sentences:
+        if not s:
+            continue
+        if _contains_any(s, violations):
+            continue
+        kept.append(s)
+
+    cleaned = " ".join(kept).strip()
+    if cleaned:
+        return cleaned
+    return "দুঃখিত, এই বিষয়ে আমাদের কাছে তথ্য নেই।"
 
 
 # ─────────────────────────── Auth Helpers ───────────────────────────
@@ -345,6 +401,7 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
 ৪. যদি তথ্য Knowledge Base-এ না থাকে, বলুন: "দুঃখিত, এই বিষয়ে আমাদের কাছে তথ্য নেই।"
 ৫. উত্তর সংক্ষিপ্ত, স্পষ্ট ও সহায়ক রাখুন।
 ৬. পূর্ববর্তী কথোপকথনের সাথে সামঞ্জস্য রেখে উত্তর দিন।
+৭. Knowledge Base-এ না থাকলে কোনো ডিসকাউন্ট/বিশেষ মূল্য বা গিফট র্যাপিং সুবিধা উল্লেখ করবেন না।
 
 Knowledge Base:
 {kb_context}"""
@@ -367,7 +424,8 @@ Knowledge Base:
                 max_tokens=512,
                 temperature=0.3,
             )
-            answer = response.choices[0].message.content.strip()
+            raw_answer = response.choices[0].message.content.strip()
+            answer = guard_answer(raw_answer, kb_context)
         except Exception as e:
             raise HTTPException(500, f"LLM error: {str(e)}")
         generation_ms = (time.time() - t_gen) * 1000
