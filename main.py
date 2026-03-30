@@ -314,12 +314,16 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
     retrieval_ms = (time.time() - t_ret) * 1000
 
     msg_lower = req.message.lower()
-    product_in_query = rag.has_product_mention(req.message)
+    # Use context-augmented query to detect the product for follow-up questions
+    product_in_query = rag.has_product_mention(rag_query)
     is_price_query = any(k in msg_lower for k in ["দাম", "price", "কত টাকা", "টাকা কত"])
     is_availability_query = any(k in msg_lower for k in ["বিক্রি", "কেনা", "পাওয়া যায়", "পাওয়া যায়", "sell", "buy", "available"])
     has_price_info = any(("টাকা" in c) or re.search(r"\d", c) for c in kb_chunks)
 
-    if is_availability_query and not product_in_query:
+    if is_price_query and not product_in_query:
+        answer = "দুঃখিত, এই বিষয়ে আমাদের কাছে তথ্য নেই।"
+        generation_ms = 0.0
+    elif is_availability_query and not product_in_query:
         answer = "দুঃখিত, এই পণ্যটি আমাদের স্টোরে পাওয়া যায় না।"
         generation_ms = 0.0
     elif not kb_chunks:
