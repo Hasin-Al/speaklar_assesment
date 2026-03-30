@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>শপ সহায়ক — চ্যাট</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0d0d1a;
+    --surface: #14142a;
+    --card: #1a1a35;
+    --border: rgba(255,255,255,0.08);
+    --accent: #7c6ff7;
+    --accent2: #5b8af7;
+    --text: #e8e8f0;
+    --muted: rgba(255,255,255,0.4);
+    --user-bg: linear-gradient(135deg, #7c6ff7, #5b8af7);
+    --bot-bg: #1f1f3d;
+  }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', Hind Siliguri, sans-serif;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0; z-index: 10;
+  }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header-icon { font-size: 28px; }
+  .header-title { font-size: 18px; font-weight: 700; }
+  .header-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .online-dot {
+    width: 8px; height: 8px; background: #4ade80;
+    border-radius: 50%; display: inline-block; margin-left: 4px;
+    box-shadow: 0 0 6px #4ade80;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .header-right { display: flex; align-items: center; gap: 10px; }
+  .user-badge {
+    background: rgba(124,111,247,0.15); border: 1px solid rgba(124,111,247,0.3);
+    padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 500;
+  }
+  .icon-btn {
+    background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+    color: var(--muted); width: 36px; height: 36px; border-radius: 10px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-size: 16px; transition: all 0.2s;
+  }
+  .icon-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+
+  /* ── Chat area ── */
+  #messages {
+    flex: 1; overflow-y: auto; padding: 24px 16px;
+    display: flex; flex-direction: column; gap: 16px;
+    scroll-behavior: smooth;
+  }
+  #messages::-webkit-scrollbar { width: 4px; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+
+  .msg-row { display: flex; gap: 10px; max-width: 780px; margin: 0 auto; width: 100%; }
+  .msg-row.user { flex-direction: row-reverse; }
+
+  .avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; flex-shrink: 0; margin-top: 4px;
+  }
+  .bot .avatar { background: var(--card); border: 1px solid var(--border); }
+  .user .avatar { background: var(--accent); }
+
+  .bubble {
+    padding: 13px 17px; border-radius: 18px;
+    max-width: calc(100% - 50px); font-size: 15px; line-height: 1.65;
+    word-break: break-word;
+  }
+  .bot .bubble {
+    background: var(--bot-bg); border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+  .user .bubble {
+    background: var(--user-bg);
+    color: #fff; border-bottom-right-radius: 4px;
+  }
+  .msg-meta {
+    font-size: 11px; color: var(--muted); margin-top: 5px;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .user .msg-meta { justify-content: flex-end; }
+  .kb-badge {
+    background: rgba(90,200,90,0.15); color: #6ee66e;
+    padding: 2px 7px; border-radius: 10px; font-size: 10px;
+    border: 1px solid rgba(90,200,90,0.2);
+  }
+
+  /* Typing indicator */
+  .typing-indicator {
+    display: flex; gap: 5px; padding: 14px 18px;
+    background: var(--bot-bg); border: 1px solid var(--border);
+    border-radius: 18px; border-bottom-left-radius: 4px; width: fit-content;
+  }
+  .typing-indicator span {
+    width: 7px; height: 7px; background: var(--muted);
+    border-radius: 50%; animation: bounce 1.2s infinite;
+  }
+  .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+
+  /* Welcome message */
+  .welcome {
+    text-align: center; padding: 40px 20px; color: var(--muted);
+    max-width: 400px; margin: auto;
+  }
+  .welcome-icon { font-size: 56px; margin-bottom: 16px; }
+  .welcome h2 { font-size: 20px; color: var(--text); margin-bottom: 8px; }
+  .welcome p { font-size: 14px; line-height: 1.7; }
+  .suggestions {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    justify-content: center; margin-top: 20px;
+  }
+  .suggest-btn {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 14px; border-radius: 20px;
+    font-size: 13px; cursor: pointer; transition: all 0.2s;
+    font-family: inherit;
+  }
+  .suggest-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Input area ── */
+  .input-area {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 16px 20px;
+    flex-shrink: 0;
+  }
+  .input-wrap {
+    max-width: 780px; margin: 0 auto;
+    display: flex; gap: 10px; align-items: flex-end;
+  }
+  textarea {
+    flex: 1; padding: 13px 16px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; color: var(--text);
+    font-size: 15px; font-family: inherit;
+    outline: none; resize: none; max-height: 130px; min-height: 50px;
+    transition: border-color 0.2s; line-height: 1.5;
+  }
+  textarea:focus { border-color: var(--accent); }
+  textarea::placeholder { color: var(--muted); }
+  .send-btn {
+    width: 50px; height: 50px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border: none; border-radius: 14px; color: #fff;
+    font-size: 20px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.2s, transform 0.1s; flex-shrink: 0;
+  }
+  .send-btn:hover { opacity: 0.9; transform: scale(1.03); }
+  .send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .input-hint {
+    text-align: center; font-size: 11px; color: var(--muted);
+    margin-top: 8px; max-width: 780px; margin-left: auto; margin-right: auto;
+  }
+
+  /* Modal */
+  .modal-bg {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-bg.open { display: flex; }
+  .modal {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 20px; padding: 32px; max-width: 340px; width: 90%;
+    text-align: center;
+  }
+  .modal h3 { font-size: 18px; margin-bottom: 10px; }
+  .modal p { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+  .modal-btns { display: flex; gap: 10px; justify-content: center; }
+  .modal-btn {
+    padding: 10px 24px; border-radius: 10px; border: none;
+    font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity 0.2s;
+  }
+  .modal-btn.cancel { background: rgba(255,255,255,0.08); color: var(--text); }
+  .modal-btn.danger { background: #ef4444; color: #fff; }
+  .modal-btn:hover { opacity: 0.85; }
+
+  @media (max-width: 600px) {
+    header { padding: 12px 16px; }
+    .header-title { font-size: 16px; }
+    .user-badge { display: none; }
+    #messages { padding: 16px 10px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <div class="header-icon">🛍️</div>
+    <div>
+      <div class="header-title">শপ সহায়ক <span class="online-dot"></span></div>
+      <div class="header-sub">AI-চালিত পণ্য সহায়তা</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="user-badge" id="userBadge">👤 ...</div>
+    <button class="icon-btn" title="ইতিহাস মুছুন" onclick="openClearModal()">🗑️</button>
+    <button class="icon-btn" title="লগআউট" onclick="logout()">🚪</button>
+  </div>
+</header>
+
+<div id="messages">
+  <div class="welcome" id="welcome">
+    <div class="welcome-icon">🤖</div>
+    <h2>আমি শপ সহায়ক!</h2>
+    <p>আমাদের পণ্য সম্পর্কে যেকোনো প্রশ্ন করুন। আমি বাংলায় উত্তর দিতে প্রস্তুত।</p>
+    <div class="suggestions">
+      <button class="suggest-btn" onclick="suggest('ডেনিম জিন্স সম্পর্কে বলুন')">👖 ডেনিম জিন্স</button>
+      <button class="suggest-btn" onclick="suggest('স্মার্টফোনের বৈশিষ্ট্য কী?')">📱 স্মার্টফোন</button>
+      <button class="suggest-btn" onclick="suggest('ডেলিভারি কিভাবে পাবো?')">🚚 ডেলিভারি</button>
+      <button class="suggest-btn" onclick="suggest('পেমেন্ট পদ্ধতি কী কী?')">💳 পেমেন্ট</button>
+      <button class="suggest-btn" onclick="suggest('রান্নার হাঁড়ি আছে কি?')">🍳 রান্নাঘর</button>
+      <button class="suggest-btn" onclick="suggest('ওয়ারেন্টি পলিসি কী?')">🛡️ ওয়ারেন্টি</button>
+    </div>
+  </div>
+</div>
+
+<div class="input-area">
+  <div class="input-wrap">
+    <textarea id="msgInput" placeholder="বাংলায় আপনার প্রশ্ন লিখুন..." rows="1"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMsg()">➤</button>
+  </div>
+  <div class="input-hint">Enter পাঠাতে · Shift+Enter নতুন লাইন</div>
+</div>
+
+<!-- Clear modal -->
+<div class="modal-bg" id="clearModal">
+  <div class="modal">
+    <h3>ইতিহাস মুছবেন?</h3>
+    <p>সমস্ত কথোপকথন মুছে ফেলা হবে। এটি পূর্বাবস্থায় ফেরানো যাবে না।</p>
+    <div class="modal-btns">
+      <button class="modal-btn cancel" onclick="closeClearModal()">বাতিল</button>
+      <button class="modal-btn danger" onclick="clearHistory()">মুছুন</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const token = localStorage.getItem('token');
+const username = localStorage.getItem('username');
+if (!token) window.location.href = '/';
+
+document.getElementById('userBadge').textContent = '👤 ' + (username || 'ব্যবহারকারী');
+
+// Auto-resize textarea
+const ta = document.getElementById('msgInput');
+ta.addEventListener('input', () => {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 130) + 'px';
+});
+ta.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+
+// Load history on startup
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history', { headers: authHeader() });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+    if (data.length > 0) {
+      hideWelcome();
+      data.forEach(m => appendMsg(m.role, m.content, null, false));
+      scrollBottom();
+    }
+  } catch(e) { console.error('History load failed', e); }
+}
+loadHistory();
+
+function authHeader() {
+  return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+}
+
+function hideWelcome() {
+  const w = document.getElementById('welcome');
+  if (w) w.style.display = 'none';
+}
+
+function suggest(text) {
+  document.getElementById('msgInput').value = text;
+  sendMsg();
+}
+
+async function sendMsg() {
+  const input = document.getElementById('msgInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+
+  hideWelcome();
+  appendMsg('user', msg);
+  input.value = '';
+  input.style.height = 'auto';
+  document.getElementById('sendBtn').disabled = true;
+
+  const typingId = showTyping();
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify({ message: msg })
+    });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+    removeTyping(typingId);
+    if (data.answer) {
+      appendMsg('bot', data.answer, {
+        ms: data.retrieval_ms,
+        hits: data.kb_hits
+      });
+    } else {
+      appendMsg('bot', data.detail || 'ত্রুটি ঘটেছে।');
+    }
+  } catch(e) {
+    removeTyping(typingId);
+    appendMsg('bot', '⚠️ সংযোগ ত্রুটি। আবার চেষ্টা করুন।');
+  } finally {
+    document.getElementById('sendBtn').disabled = false;
+    input.focus();
+  }
+}
+
+function appendMsg(role, text, meta = null, doScroll = true) {
+  const container = document.getElementById('messages');
+  const row = document.createElement('div');
+  row.className = `msg-row ${role === 'user' ? 'user' : 'bot'}`;
+
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar';
+  avatar.textContent = role === 'user' ? '👤' : '🤖';
+
+  const right = document.createElement('div');
+  right.style.maxWidth = 'calc(100% - 50px)';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+
+  const metaDiv = document.createElement('div');
+  metaDiv.className = 'msg-meta';
+
+  const now = new Date();
+  const timeStr = now.getHours().toString().padStart(2,'0') + ':' +
+                  now.getMinutes().toString().padStart(2,'0');
+  metaDiv.appendChild(document.createTextNode(timeStr));
+
+  if (meta && role === 'bot') {
+    const badge = document.createElement('span');
+    badge.className = 'kb-badge';
+    badge.textContent = `⚡ ${meta.ms}ms · ${meta.hits} hits`;
+    metaDiv.appendChild(badge);
+  }
+
+  right.appendChild(bubble);
+  right.appendChild(metaDiv);
+  row.appendChild(avatar);
+  row.appendChild(right);
+  container.appendChild(row);
+  if (doScroll) scrollBottom();
+}
+
+let typingCounter = 0;
+function showTyping() {
+  const id = 'typing-' + (++typingCounter);
+  const container = document.getElementById('messages');
+  const row = document.createElement('div');
+  row.className = 'msg-row bot'; row.id = id;
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar'; avatar.textContent = '🤖';
+  const ind = document.createElement('div');
+  ind.className = 'typing-indicator';
+  ind.innerHTML = '<span></span><span></span><span></span>';
+  row.appendChild(avatar); row.appendChild(ind);
+  container.appendChild(row);
+  scrollBottom();
+  return id;
+}
+
+function removeTyping(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
+function scrollBottom() {
+  const c = document.getElementById('messages');
+  c.scrollTop = c.scrollHeight;
+}
+
+function openClearModal() { document.getElementById('clearModal').classList.add('open'); }
+function closeClearModal() { document.getElementById('clearModal').classList.remove('open'); }
+
+async function clearHistory() {
+  closeClearModal();
+  try {
+    await fetch('/api/history', { method: 'DELETE', headers: authHeader() });
+    const c = document.getElementById('messages');
+    c.innerHTML = `<div class="welcome" id="welcome">
+      <div class="welcome-icon">🤖</div>
+      <h2>ইতিহাস মুছে ফেলা হয়েছে।</h2>
+      <p>নতুন কথোপকথন শুরু করুন।</p>
+    </div>`;
+  } catch(e) { alert('মুছতে পারেনি।'); }
+}
+
+function logout() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('username');
+  window.location.href = '/';
+}
+</script>
+</body>
+</html>

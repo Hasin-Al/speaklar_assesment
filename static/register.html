@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>নিবন্ধন — শপ সহায়ক</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh;
+    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', Hind Siliguri, sans-serif;
+  }
+  .card {
+    background: rgba(255,255,255,0.05);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 24px;
+    padding: 48px 40px;
+    width: 100%; max-width: 420px;
+    box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+  }
+  .logo { text-align: center; margin-bottom: 28px; }
+  .logo-icon { font-size: 44px; margin-bottom: 8px; }
+  .logo h1 { color: #fff; font-size: 22px; font-weight: 700; }
+  .logo p { color: rgba(255,255,255,0.5); font-size: 13px; margin-top: 4px; }
+  .field { margin-bottom: 18px; }
+  label { display: block; color: rgba(255,255,255,0.7); font-size: 13px; margin-bottom: 7px; font-weight: 500; }
+  input {
+    width: 100%; padding: 13px 16px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 12px; color: #fff;
+    font-size: 15px; outline: none;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  input:focus { border-color: #7c6ff7; background: rgba(255,255,255,0.1); }
+  input::placeholder { color: rgba(255,255,255,0.3); }
+  .btn {
+    width: 100%; padding: 14px;
+    background: linear-gradient(135deg, #7c6ff7, #5b8af7);
+    border: none; border-radius: 12px;
+    color: #fff; font-size: 16px; font-weight: 600;
+    cursor: pointer; transition: opacity 0.2s, transform 0.1s; margin-top: 6px;
+  }
+  .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .alert {
+    border-radius: 10px; padding: 12px 14px; font-size: 13px;
+    margin-bottom: 16px; display: none;
+  }
+  .alert.error { background: rgba(255,80,80,0.15); border: 1px solid rgba(255,80,80,0.3); color: #ff8080; }
+  .alert.success { background: rgba(80,200,120,0.15); border: 1px solid rgba(80,200,120,0.3); color: #80ffb0; }
+  .footer-link { text-align: center; margin-top: 22px; color: rgba(255,255,255,0.45); font-size: 14px; }
+  .footer-link a { color: #7c6ff7; text-decoration: none; font-weight: 500; }
+  .footer-link a:hover { text-decoration: underline; }
+  .spinner { display: inline-block; width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pw-hint { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">🛍️</div>
+    <h1>নিবন্ধন করুন</h1>
+    <p>নতুন অ্যাকাউন্ট তৈরি করুন</p>
+  </div>
+  <div class="alert" id="alert"></div>
+  <div class="field">
+    <label>ইউজারনেম</label>
+    <input type="text" id="username" placeholder="কমপক্ষে ৩ অক্ষর">
+  </div>
+  <div class="field">
+    <label>ইমেইল</label>
+    <input type="email" id="email" placeholder="your@email.com">
+  </div>
+  <div class="field">
+    <label>পাসওয়ার্ড</label>
+    <input type="password" id="password" placeholder="কমপক্ষে ৬ অক্ষর">
+    <p class="pw-hint">কমপক্ষে ৬ অক্ষরের পাসওয়ার্ড দিন</p>
+  </div>
+  <button class="btn" id="regBtn" onclick="doRegister()">নিবন্ধন করুন</button>
+  <div class="footer-link">
+    ইতিমধ্যে অ্যাকাউন্ট আছে? <a href="/">লগইন করুন</a>
+  </div>
+</div>
+
+<script>
+document.addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
+
+async function doRegister() {
+  const btn = document.getElementById('regBtn');
+  const username = document.getElementById('username').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+
+  if (!username || !email || !password) { showAlert('সব তথ্য পূরণ করুন।', 'error'); return; }
+  if (username.length < 3) { showAlert('ইউজারনেম কমপক্ষে ৩ অক্ষর হতে হবে।', 'error'); return; }
+  if (password.length < 6) { showAlert('পাসওয়ার্ড কমপক্ষে ৬ অক্ষর হতে হবে।', 'error'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>নিবন্ধন হচ্ছে...';
+
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) { showAlert(data.detail || 'নিবন্ধন ব্যর্থ।', 'error'); return; }
+    showAlert('নিবন্ধন সফল! লগইন পেজে নিয়ে যাওয়া হচ্ছে...', 'success');
+    setTimeout(() => window.location.href = '/', 1500);
+  } catch(e) {
+    showAlert('সার্ভার সংযোগ ত্রুটি।', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'নিবন্ধন করুন';
+  }
+}
+
+function showAlert(msg, type) {
+  const el = document.getElementById('alert');
+  el.textContent = msg;
+  el.className = `alert ${type}`;
+  el.style.display = 'block';
+}
+</script>
+</body>
+</html>

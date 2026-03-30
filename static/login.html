@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>লগইন — শপ সহায়ক</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh;
+    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', Hind Siliguri, sans-serif;
+  }
+  .card {
+    background: rgba(255,255,255,0.05);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 24px;
+    padding: 48px 40px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+  }
+  .logo {
+    text-align: center; margin-bottom: 32px;
+  }
+  .logo-icon {
+    font-size: 48px; margin-bottom: 10px;
+  }
+  .logo h1 {
+    color: #fff; font-size: 24px; font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .logo p { color: rgba(255,255,255,0.5); font-size: 13px; margin-top: 4px; }
+  .field { margin-bottom: 20px; }
+  label {
+    display: block; color: rgba(255,255,255,0.7);
+    font-size: 13px; margin-bottom: 8px; font-weight: 500;
+  }
+  input {
+    width: 100%; padding: 14px 16px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 12px; color: #fff;
+    font-size: 15px; outline: none;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  input:focus {
+    border-color: #7c6ff7;
+    background: rgba(255,255,255,0.1);
+  }
+  input::placeholder { color: rgba(255,255,255,0.3); }
+  .btn {
+    width: 100%; padding: 15px;
+    background: linear-gradient(135deg, #7c6ff7, #5b8af7);
+    border: none; border-radius: 12px;
+    color: #fff; font-size: 16px; font-weight: 600;
+    cursor: pointer; transition: opacity 0.2s, transform 0.1s;
+    margin-top: 8px;
+  }
+  .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .error {
+    background: rgba(255,80,80,0.15); border: 1px solid rgba(255,80,80,0.3);
+    color: #ff8080; border-radius: 10px; padding: 12px 14px;
+    font-size: 13px; margin-bottom: 16px; display: none;
+  }
+  .footer-link {
+    text-align: center; margin-top: 24px;
+    color: rgba(255,255,255,0.45); font-size: 14px;
+  }
+  .footer-link a { color: #7c6ff7; text-decoration: none; font-weight: 500; }
+  .footer-link a:hover { text-decoration: underline; }
+  .spinner { display: inline-block; width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">🛍️</div>
+    <h1>শপ সহায়ক</h1>
+    <p>AI-চালিত বাংলা চ্যাটবট</p>
+  </div>
+  <div class="error" id="err"></div>
+  <div class="field">
+    <label>ইউজারনেম</label>
+    <input type="text" id="username" placeholder="আপনার ইউজারনেম লিখুন" autocomplete="username">
+  </div>
+  <div class="field">
+    <label>পাসওয়ার্ড</label>
+    <input type="password" id="password" placeholder="আপনার পাসওয়ার্ড লিখুন" autocomplete="current-password">
+  </div>
+  <button class="btn" id="loginBtn" onclick="doLogin()">লগইন করুন</button>
+  <div class="footer-link">
+    অ্যাকাউন্ট নেই? <a href="/register-page">নিবন্ধন করুন</a>
+  </div>
+</div>
+
+<script>
+document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+async function doLogin() {
+  const btn = document.getElementById('loginBtn');
+  const err = document.getElementById('err');
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  err.style.display = 'none';
+
+  if (!username || !password) {
+    showErr('ইউজারনেম ও পাসওয়ার্ড দিন।'); return;
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>অপেক্ষা করুন...';
+
+  const form = new FormData();
+  form.append('username', username);
+  form.append('password', password);
+
+  try {
+    const res = await fetch('/api/token', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) { showErr(data.detail || 'লগইন ব্যর্থ।'); return; }
+    localStorage.setItem('token', data.access_token);
+    localStorage.setItem('username', data.username);
+    window.location.href = '/chat';
+  } catch(e) {
+    showErr('সার্ভার সংযোগ ত্রুটি।');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'লগইন করুন';
+  }
+}
+
+function showErr(msg) {
+  const e = document.getElementById('err');
+  e.textContent = msg; e.style.display = 'block';
+}
+</script>
+</body>
+</html>
