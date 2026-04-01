@@ -375,10 +375,19 @@ class RAGEngine:
             if self._product_match_score(tokens, msg_tokens) >= 0.5:
                 matched.append(" ".join(tokens))
         # Single-token fallback (e.g., "নুডুলস", "ঘড়ি")
+        # Score each candidate product by how many query tokens it matches,
+        # then return only the top-scoring ones to avoid false positives from
+        # shared tokens like "তাজা" matching both "তাজা পাউরুটি" and "তাজা দই".
         if not matched:
+            product_scores: dict[str, int] = {}
             for tok in msg_tokens:
                 if tok in self.product_token_map:
-                    matched.extend(self.product_token_map[tok][:3])
+                    # Use set() to avoid inflating scores with duplicate KB entries
+                    for pname in set(self.product_token_map[tok]):
+                        product_scores[pname] = product_scores.get(pname, 0) + 1
+            if product_scores:
+                max_score = max(product_scores.values())
+                matched = [p for p, s in product_scores.items() if s == max_score]
         # Deduplicate while preserving order
         seen, out = set(), []
         for m in matched:
@@ -393,6 +402,33 @@ class RAGEngine:
 
     def has_product_mention(self, message: str) -> bool:
         return len(self.matched_product_names(message)) > 0
+
+    def has_unknown_product_qualifiers(self, message: str) -> bool:
+        """
+        Returns True when the message has KNOWN product tokens (in product_token_map)
+        alongside UNKNOWN significant words (not in product_token_map, not stop/question words,
+        length >= 3).  Detects brand-specific queries like 'নাইকি জুতা' where 'নাইকি' is
+        a brand not in the KB — so we should say "not available" instead of matching the
+        generic product.
+        """
+        _QUESTION_WORDS = {
+            "কি", "কী", "কেমন", "কত", "আছে", "আছেন", "দাম", "রিভিউ",
+            "রেটিং", "ওয়ারেন্টি", "ডেলিভারি", "ডেলিভারী", "পাওয়া", "যায়",
+            "sell", "buy", "available", "কোথায়", "কেন", "হয়", "করেন",
+            "বিক্রি", "কিনতে", "পারি", "পাব", "পাবেন", "কিনব", "দিন",
+        }
+        tokens = set(self._tokenize(message.lower()))
+        has_known = any(t in self.product_token_map for t in tokens)
+        if not has_known:
+            return False
+        has_unknown = any(
+            t not in self.product_token_map
+            and t not in self._STOP_TOKENS
+            and t not in _QUESTION_WORDS
+            and len(t) >= 3
+            for t in tokens
+        )
+        return has_unknown
 
     def retrieve_by_product_name(self, query: str, top_k: int = TOP_K) -> List[str]:
         """Direct product-name lookup — fallback when hybrid score is still weak."""
@@ -418,26 +454,60 @@ class ContextManager:
     If not, injects recent conversation history into the RAG query.
     """
 
-    @staticmethod
-    def has_context(message: str) -> bool:
-        """Heuristic: message is self-contained if it's > 15 chars with a noun"""
-        # Basic check: message mentions a product-like keyword
-        indicators = ['কি', 'কী', 'কোথায়', 'কেন', 'কিভাবে', 'দাম', 'পণ্য',
-                      'আছে', 'কত', 'what', 'how', 'price', 'product', 'buy']
-        msg_lower = normalize_text(message).lower()
-        return any(ind in msg_lower for ind in indicators) and len(message) > 8
+    _QUESTION_HINTS = [
+        "কি", "কী", "কেমন", "কোথায়", "কেন", "কিভাবে", "কত", "দাম",
+        "আছে", "রিভিউ", "রেটিং", "স্টার", "price", "review", "rating", "available"
+    ]
 
-    @staticmethod
-    def build_rag_query(message: str, history: List[dict]) -> str:
-        """Augment sparse queries with recent context."""
-        # Treat very short or token-light queries as follow-ups
-        msg = normalize_text(message)
-        tokens = re.findall(r'[\u0980-\u09FF]+|[a-zA-Z0-9]+', msg)
-        if (len(msg.strip()) < 10 or len(tokens) <= 3) and history:
-            # Very short follow-up — prepend last user message for context
-            last_user_msgs = [h['content'] for h in history if h['role'] == 'user'][-2:]
-            context_str = ' '.join(last_user_msgs)
-            return f"{context_str} {message}"
+    def __init__(self, rag_engine: "RAGEngine"):
+        self.rag = rag_engine
+
+    def _has_product_context(self, message: str) -> bool:
+        msg_norm = normalize_text(message)
+        return self.rag.has_product_mention(msg_norm) or self.rag.has_product_token(msg_norm)
+
+    def _extract_recent_products(self, history: List[dict]) -> List[str]:
+        # Find the most recent user message that mentions products
+        for h in reversed(history):
+            if h.get("role") != "user":
+                continue
+            h_norm = normalize_text(h.get("content", ""))
+            # Skip messages that had an unknown brand qualifier — they didn't match any
+            # real KB product, so we must not let them pollute the context for later queries.
+            if self.rag.has_unknown_product_qualifiers(h_norm):
+                continue
+            names = self.rag.matched_product_names(h_norm)
+            if names:
+                # KB product names may include a comma + description (e.g. "তাজা পাউরুটি, প্রতিদিন...").
+                # Keep only the part before the comma so context stays short and clean.
+                return [n.split(",")[0].strip() for n in names]
+        return []
+
+    def _is_question_like(self, message: str) -> bool:
+        msg_lower = normalize_text(message).lower()
+        return ("?" in message) or any(h in msg_lower for h in self._QUESTION_HINTS)
+
+    def build_rag_query(
+        self,
+        message: str,
+        history: List[dict],
+        followup_intent: bool,
+        has_followup_cue: bool,
+    ) -> str:
+        """
+        Augment sparse queries with recent product context only when the
+        message itself lacks product mentions.
+        """
+        if self._has_product_context(message):
+            return message
+
+        recent_products = self._extract_recent_products(history)
+        if not recent_products:
+            return message
+
+        if followup_intent or has_followup_cue or self._is_question_like(message):
+            return f"{' '.join(recent_products)} {message}"
+
         return message
 
 
@@ -530,7 +600,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 init_db()
 rag = RAGEngine(KB_PATH)
-ctx_manager = ContextManager()
+ctx_manager = ContextManager(rag)
 
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
@@ -601,20 +671,23 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
     ).fetchall()
     history = [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
-    # Build RAG query with context augmentation
-    rag_query = ctx_manager.build_rag_query(req.message, history)
-    rag_query_norm = normalize_text(rag_query)
+    msg_norm = normalize_text(req.message)
+    msg_lower = msg_norm.lower()
 
-    msg_lower = normalize_text(req.message).lower()
-    # Use normalized query to detect product mentions
-    matched_names = rag.matched_product_names(rag_query_norm)
-    product_in_query = len(matched_names) > 0
-    product_token_hit = rag.has_product_token(rag_query_norm)
+    # Detect product mentions in the current message (without history)
+    msg_matched_names = rag.matched_product_names(msg_norm)
+    msg_product_token_hit = rag.has_product_token(msg_norm)
+    product_in_msg = len(msg_matched_names) > 0 or msg_product_token_hit
+
+    # If the message has a known product token but ALSO has an unknown brand/qualifier
+    # (e.g. "নাইকি জুতা আছে?") → treat it as "not in store" so we don't answer about
+    # the generic product and don't pollute last_product with a wrong match.
+    has_unknown_brand = product_in_msg and rag.has_unknown_product_qualifiers(msg_norm)
 
     # Intent detection for follow-ups
     is_price_query = any(k in msg_lower for k in ["দাম", "price", "কত টাকা", "টাকা কত"])
     is_discount_query = any(k in msg_lower for k in ["ছাড়", "ছাড়", "discount", "অফার", "বিশেষ মূল্য"])
-    is_availability_query = any(k in msg_lower for k in ["বিক্রি", "কেনা", "পাওয়া যায়", "পাওয়া যায়", "sell", "buy", "available"])
+    is_availability_query = any(k in msg_lower for k in ["বিক্রি", "কেনা", "পাওয়া যায়", "পাওয়া যায়", "আছে", "sell", "buy", "available"])
     is_feature_query = any(k in msg_lower for k in ["ফিচার", "বৈশিষ্ট্য", "features"])
     is_warranty_query = any(k in msg_lower for k in ["ওয়ারেন্টি", "ওয়ারেন্টি", "warranty"])
     is_delivery_query = any(k in msg_lower for k in ["ডেলিভারি", "ডেলিভারী", "delivery"])
@@ -657,10 +730,30 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
 
     has_followup_cue = any(k in msg_lower for k in ["আর", "আরও", "এছাড়া", "এছাড়া", "আগেরটা", "ওটা", "এটা", "এইটা"])
 
-    # Context memory: inject last product for follow-up intents
+    # Build RAG query with context augmentation (only if no product in current message)
+    rag_query = ctx_manager.build_rag_query(
+        req.message,
+        history,
+        followup_intent=followup_intent,
+        has_followup_cue=has_followup_cue,
+    )
+    rag_query_norm = normalize_text(rag_query)
+
+    # Use normalized query to detect product mentions
+    matched_names = rag.matched_product_names(rag_query_norm)
+    product_in_query = len(matched_names) > 0
+    product_token_hit = rag.has_product_token(rag_query_norm)
+
+    # Context memory: fallback to last product from state if history didn't help
     last_product, last_intent = get_user_state(user_id)
-    if not product_in_query and not product_token_hit and last_product and followup_intent:
-        rag_query_norm = normalize_text(f"{last_product} {rag_query}")
+    if (
+        not product_in_msg
+        and last_product
+        and (followup_intent or has_followup_cue or ctx_manager._is_question_like(req.message))
+        and rag_query == req.message
+    ):
+        rag_query = f"{last_product} {rag_query}"
+        rag_query_norm = normalize_text(rag_query)
         matched_names = rag.matched_product_names(rag_query_norm)
         product_in_query = len(matched_names) > 0
         product_token_hit = rag.has_product_token(rag_query_norm)
@@ -689,7 +782,15 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
 
     decision = ""
     raw_answer = ""
-    if matched_names and primary_intent:
+    # Brand mismatch: user asked for a specific brand not in our KB
+    # (e.g. "নাইকি জুতা আছে?" — নাইকি is unknown, জুতা is a generic KB product).
+    # Return "not available" immediately and don't store anything as last_product.
+    if has_unknown_brand:
+        answer = "দুঃখিত, এই পণ্যটি আমাদের স্টোরে পাওয়া যায় না।"
+        decision = "unknown_brand"
+        generation_ms = 0.0
+        matched_names = []  # ensure last_product is not updated
+    elif matched_names and primary_intent:
         if primary_intent == "availability":
             answer = f"হ্যাঁ, আমাদের স্টোরে {matched_names[0]} পাওয়া যায়।"
         elif primary_intent == "discount":
@@ -835,9 +936,10 @@ STRICT RULES (violating any rule is not allowed):
 
     # Save to history
     if matched_names or primary_intent:
+        last_product_value = " ".join(n.split(",")[0].strip() for n in matched_names) if matched_names else None
         set_user_state(
             user_id,
-            product_name=matched_names[0] if matched_names else None,
+            product_name=last_product_value,
             intent=primary_intent
         )
     conn.execute("INSERT INTO chat_history (user_id, role, content) VALUES (?,?,?)",
