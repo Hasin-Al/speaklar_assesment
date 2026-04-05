@@ -1106,6 +1106,9 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
 
     # Domain classification (store vs general chat)
     query_domain = rag.query_domain(msg_norm)
+    semantic_hit_domain, _, _ = rag.semantic_product_match(msg_norm)
+    if semantic_hit_domain or product_in_msg:
+        query_domain = "store"
 
     # Primary intent (single)
     primary_intent = None
