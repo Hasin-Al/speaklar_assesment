@@ -13,7 +13,7 @@ from typing import Optional, List
 
 import numpy as np
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -47,6 +47,12 @@ PRODUCT_QUERY_SIM_THRESHOLD = 0.45
 PRODUCT_NAME_BIND_THRESHOLD = 0.60
 PRODUCT_NAME_MARGIN = 0.04
 DOMAIN_CLASSIFY_MARGIN = 0.02
+FOLLOWUP_CE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "followup-cross-encoder")
+FOLLOWUP_CE_THRESHOLD = 0.55
+FOLLOWUP_CE_MAX_TURNS = 4
+INTENT_CLF_PATH = os.path.join(os.path.dirname(__file__), "models", "intent_clf.npz")
+INTENT_MIN_PROB = 0.45
+INTENT_MARGIN_PROB = 0.05
 STORE_QUERY_ANCHOR = "আমি দোকানের পণ্য, দাম, রিভিউ, রেটিং, ডেলিভারি, ওয়ারেন্টি, স্টক বা ছাড় সম্পর্কে জানতে চাই।"
 GENERAL_CHAT_ANCHOR = "আমি সাধারণ কথা বলছি বা সাধারণ প্রশ্ন করছি।"
 INTENT_MIN_SIM = 0.38
@@ -793,6 +799,24 @@ class SemanticContextResolver:
         return False
 
 
+# ─────────────────────────── Follow-Up Cross-Encoder ───────────────────────────
+class FollowupCrossEncoder:
+    def __init__(self, model_path: str):
+        self.model = CrossEncoder(model_path, num_labels=1)
+
+    def best_context(self, message: str, history: List[dict], max_turns: int) -> tuple[Optional[str], float]:
+        user_turns = [h.get("content", "") for h in history if h.get("role") == "user"]
+        if not user_turns:
+            return None, 0.0
+        candidates = user_turns[-max_turns:]
+        pairs = [[message, c] for c in candidates]
+        scores = self.model.predict(pairs)
+        if not len(scores):
+            return None, 0.0
+        best_idx = int(np.argmax(scores))
+        return candidates[best_idx], float(scores[best_idx])
+
+
 # ─────────────────────────── Embedding Intent Resolver ───────────────────────────
 class IntentResolver:
     def __init__(self, rag_engine: "RAGEngine"):
@@ -877,6 +901,44 @@ class IntentResolver:
             elif score > second_score:
                 second_score = score
         return best_intent, best_score, second_score
+
+
+class IntentClassifier:
+    def __init__(self, model_path: str, rag_engine: "RAGEngine"):
+        data = np.load(model_path, allow_pickle=True)
+        self.W = data["W"]
+        self.b = data["b"]
+        self.labels = data["labels"].tolist()
+        self.label_index = {l: i for i, l in enumerate(self.labels)}
+        self.rag = rag_engine
+
+    def _softmax(self, x: np.ndarray) -> np.ndarray:
+        x = x - np.max(x)
+        ex = np.exp(x)
+        return ex / np.sum(ex)
+
+    def classify(self, message: str) -> tuple[Optional[str], float, float]:
+        qvec = self.rag._get_query_embedding(message)
+        logits = self.W @ qvec + self.b
+        probs = self._softmax(logits)
+        if probs.size == 0:
+            return None, 0.0, 0.0
+        best_idx = int(np.argmax(probs))
+        best_score = float(probs[best_idx])
+        if probs.size > 1:
+            second_score = float(np.partition(probs, -2)[-2])
+        else:
+            second_score = 0.0
+        return self.labels[best_idx], best_score, second_score
+
+    def score_intent(self, message: str, intent: str) -> float:
+        idx = self.label_index.get(intent)
+        if idx is None:
+            return 0.0
+        qvec = self.rag._get_query_embedding(message)
+        logits = self.W @ qvec + self.b
+        probs = self._softmax(logits)
+        return float(probs[idx])
 
 
 class BrandResolver:
@@ -1202,6 +1264,20 @@ intent_resolver = IntentResolver(rag)
 brand_resolver = BrandResolver(rag)
 multi_query_resolver = MultiQueryResolver(rag)
 selection_resolver = SelectionResolver(rag)
+followup_ce = None
+if os.path.isdir(FOLLOWUP_CE_MODEL_PATH):
+    try:
+        followup_ce = FollowupCrossEncoder(FOLLOWUP_CE_MODEL_PATH)
+        print(f"[CTX] Loaded follow-up cross-encoder from {FOLLOWUP_CE_MODEL_PATH}")
+    except Exception as e:
+        print(f"[CTX] Failed to load follow-up cross-encoder: {e}")
+intent_clf = None
+if os.path.isfile(INTENT_CLF_PATH):
+    try:
+        intent_clf = IntentClassifier(INTENT_CLF_PATH, rag)
+        print(f"[INTENT] Loaded intent classifier from {INTENT_CLF_PATH}")
+    except Exception as e:
+        print(f"[INTENT] Failed to load intent classifier: {e}")
 
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
@@ -1275,6 +1351,18 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
     msg_norm = normalize_text(req.message)
     msg_lower = msg_norm.lower()
 
+    # Follow-up detection using cross-encoder (if available)
+    followup_ce_used = False
+    followup_ce_text = None
+    followup_ce_score = 0.0
+    followup_ce_applied = False
+    if followup_ce and history:
+        best_text, best_score = followup_ce.best_context(req.message, history, FOLLOWUP_CE_MAX_TURNS)
+        if best_text and best_score >= FOLLOWUP_CE_THRESHOLD:
+            followup_ce_used = True
+            followup_ce_text = best_text
+            followup_ce_score = best_score
+
     # Detect product mentions in the current message (embedding-based)
     msg_matched_names = rag.matched_product_names(msg_norm)
     semantic_hit_domain, _, _ = rag.semantic_product_match(msg_norm)
@@ -1285,10 +1373,20 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
     multi_targets = [n.split(",")[0].strip() for n in msg_matched_names] if multi_product else []
 
     # Embedding-based intent detection
-    intent, intent_score, intent_second = intent_resolver.classify(msg_norm)
+    intent_source = "anchors"
+    if intent_clf:
+        intent, intent_score, intent_second = intent_clf.classify(msg_norm)
+        intent_source = "clf"
+    else:
+        intent, intent_score, intent_second = intent_resolver.classify(msg_norm)
     primary_intent = None
-    if intent and intent_score >= INTENT_MIN_SIM and (intent_score - intent_second) >= INTENT_MARGIN:
-        primary_intent = intent
+    if intent:
+        if intent_source == "clf":
+            if intent_score >= INTENT_MIN_PROB and (intent_score - intent_second) >= INTENT_MARGIN_PROB:
+                primary_intent = intent
+        else:
+            if intent_score >= INTENT_MIN_SIM and (intent_score - intent_second) >= INTENT_MARGIN:
+                primary_intent = intent
     followup_intent = primary_intent is not None
 
     # Domain classification (store vs general chat) - embedding based
@@ -1342,9 +1440,12 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
     # Context memory: fallback to last product from state (used only if semantic context not applied)
     last_product, last_intent, last_product_known, last_products_list = get_user_state(user_id)
 
-    if not primary_intent and last_intent:
-        last_score = intent_resolver.score_intent(msg_norm, last_intent)
-        if (last_score >= INTENT_FOLLOWUP_SIM or product_in_msg) and (product_in_msg or query_domain == "store"):
+    if not primary_intent and last_intent and followup_ce_used:
+        if intent_clf:
+            last_score = intent_clf.score_intent(msg_norm, last_intent)
+        else:
+            last_score = intent_resolver.score_intent(msg_norm, last_intent)
+        if last_score >= INTENT_FOLLOWUP_SIM:
             primary_intent = last_intent
 
     # If user selects a product name after clarification, carry over last intent
@@ -1390,6 +1491,7 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
                     "last_intent": None,
                     "followup_intent": False,
                     "primary_intent": None,
+                    "intent_source": intent_source,
                     "product_token_hit": False,
                     "discount_sentence": "",
                     "product_in_query": False,
@@ -1456,6 +1558,7 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
                 "last_intent": None,
                 "followup_intent": False,
                 "primary_intent": None,
+                "intent_source": intent_source,
                 "product_token_hit": False,
                 "discount_sentence": "",
                 "product_in_query": False,
@@ -1514,6 +1617,7 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
                 "last_intent": last_intent,
                 "followup_intent": followup_intent,
                 "primary_intent": primary_intent,
+                "intent_source": intent_source,
                 "product_token_hit": False,
                 "discount_sentence": "",
                 "product_in_query": False,
@@ -1581,6 +1685,7 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
                 "last_intent": last_intent,
                 "followup_intent": followup_intent,
                 "primary_intent": primary_intent,
+                "intent_source": intent_source,
                 "product_token_hit": False,
                 "discount_sentence": "",
                 "product_in_query": False,
@@ -1610,22 +1715,10 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
     semantic_context_used = False
     semantic_context_text = None
     semantic_context_score = 0.0
-    if (not msg_has_own_context) and (not product_in_query) and (query_domain == "store") and semantic_ctx.should_augment(top_score, second_score):
-        best_text, best_sim = semantic_ctx.pick_best_context(req.message, history)
-        best_text_norm = normalize_text(best_text) if best_text else ""
-        msg_norm_cmp = normalize_text(req.message)
-        best_sem_hit, _, _ = rag.semantic_product_match(best_text_norm) if best_text else (False, 0.0, None)
-        best_has_product = bool(rag.matched_product_names(best_text_norm)) or best_sem_hit if best_text else False
-        if (
-            best_text
-            and best_sim >= SEMANTIC_CONTEXT_MIN_SIM
-            and best_text_norm != msg_norm_cmp
-            and best_has_product
-        ):
-            semantic_context_used = True
-            semantic_context_text = best_text
-            semantic_context_score = best_sim
-            rag_query = f"{best_text} {req.message}"
+    if (not msg_has_own_context) and (not product_in_query) and (query_domain == "store"):
+        if followup_ce_used and followup_ce_text:
+            followup_ce_applied = True
+            rag_query = f"{followup_ce_text} {req.message}"
             rag_query_norm = normalize_text(rag_query)
             matched_names = rag.matched_product_names(rag_query_norm)
             product_in_query = len(matched_names) > 0
@@ -1633,6 +1726,29 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
             t_ret = time.time()
             kb_chunks, top_score, second_score = rag.retrieve(rag_query_norm)
             retrieval_ms = (time.time() - t_ret) * 1000
+        elif semantic_ctx.should_augment(top_score, second_score):
+            best_text, best_sim = semantic_ctx.pick_best_context(req.message, history)
+            best_text_norm = normalize_text(best_text) if best_text else ""
+            msg_norm_cmp = normalize_text(req.message)
+            best_sem_hit, _, _ = rag.semantic_product_match(best_text_norm) if best_text else (False, 0.0, None)
+            best_has_product = bool(rag.matched_product_names(best_text_norm)) or best_sem_hit if best_text else False
+            if (
+                best_text
+                and best_sim >= SEMANTIC_CONTEXT_MIN_SIM
+                and best_text_norm != msg_norm_cmp
+                and best_has_product
+            ):
+                semantic_context_used = True
+                semantic_context_text = best_text
+                semantic_context_score = best_sim
+                rag_query = f"{best_text} {req.message}"
+                rag_query_norm = normalize_text(rag_query)
+                matched_names = rag.matched_product_names(rag_query_norm)
+                product_in_query = len(matched_names) > 0
+                product_token_hit = rag.has_product_token(rag_query_norm)
+                t_ret = time.time()
+                kb_chunks, top_score, second_score = rag.retrieve(rag_query_norm)
+                retrieval_ms = (time.time() - t_ret) * 1000
 
     # Fallback to last_product only if semantic context was not used
     if (
@@ -1683,6 +1799,7 @@ def chat(req: ChatRequest, current_user=Depends(get_current_user)):
                     "last_intent": last_intent,
                     "followup_intent": followup_intent,
                     "primary_intent": primary_intent,
+                    "intent_source": intent_source,
                     "product_token_hit": False,
                     "discount_sentence": "",
                     "product_in_query": False,
@@ -1950,11 +2067,15 @@ STRICT RULES (violating any rule is not allowed):
         f"last_intent={last_intent}",
         f"followup_intent={followup_intent}",
         f"primary_intent={primary_intent}",
+        f"intent_source={intent_source}",
         f"product_token_hit={product_token_hit}",
         f"discount_sentence={discount_sentence}",
         f"decision={decision}",
         f"semantic_ctx_used={semantic_context_used}",
         f"semantic_ctx_score={semantic_context_score:.4f}",
+        f"followup_ce_used={followup_ce_used}",
+        f"followup_ce_score={followup_ce_score:.4f}",
+        f"followup_ce_applied={followup_ce_applied}",
         f"query_domain={query_domain}",
         f"retrieval_ms={retrieval_ms:.2f}",
         f"generation_ms={generation_ms:.2f}",
@@ -1984,8 +2105,13 @@ STRICT RULES (violating any rule is not allowed):
             "semantic_context_used": semantic_context_used,
             "semantic_context_score": round(semantic_context_score, 4),
             "semantic_context_text": semantic_context_text,
+            "followup_ce_used": followup_ce_used,
+            "followup_ce_score": round(followup_ce_score, 4),
+            "followup_ce_applied": followup_ce_applied,
+            "followup_ce_text": followup_ce_text,
             "query_domain": query_domain,
             "primary_intent": primary_intent,
+            "intent_source": intent_source,
             "product_token_hit": product_token_hit,
             "discount_sentence": discount_sentence,
             "product_in_query": product_in_query,
